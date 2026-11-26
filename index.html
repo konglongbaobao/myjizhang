@@ -1528,6 +1528,19 @@ function githubRequest(method,body,ifMatch){
 function requestSync(method,body,ifMatch){
   return syncCfg().mode==='github'?githubRequest(method,body,ifMatch):syncRequest(method,body,ifMatch);
 }
+/* 诊断云端响应：把「认证失败 / 文件不存在 / 文件损坏 / 版本不兼容」区分开，避免一律报「格式不正确」 */
+function diagnoseRemote(res){
+  if(!res)return '无响应';
+  const p=res.payload;
+  const msg=p&&typeof p.message==='string'?p.message:'';
+  if(res.status===401||res.status===403)return '认证失败：令牌无效或权限不足（HTTP '+res.status+'）。请在「云同步」页重新粘贴有效令牌并保存（'+esc(msg.slice(0,80))+'）';
+  if(res.status===404)return '云端尚无账本文件（首次使用请点「上传本机」）';
+  if(res.status>=500)return '云端服务暂时不可用（HTTP '+res.status+'），请稍后重试';
+  if(p&&p.error)return String(p.error).slice(0,120);
+  if(p&&p.raw)return '云端返回的不是本工具的数据文件（可能是网页或错误页）。请检查仓库路径是否为 ledger/backup.json、分支是否正确';
+  if(!p)return '云端无有效响应，请检查网络';
+  return '云端文件结构无法识别（HTTP '+res.status+'）。可能由旧版程序上传或文件被改动';
+}
 function extractBackup(res){
   const p=res&&res.payload;if(!p)return null;
   if(p.__file&&p.__file.data&&p.__file.data.meta)return p.__file;
@@ -1539,9 +1552,13 @@ function extractBackup(res){
 }
 function validateBackup(backup){
   const src=backup&&backup.data&&backup.data.meta?backup.data:backup;
-  if(!src||!src.meta)throw new Error('云端数据格式不正确');
+  if(!src||!src.meta){
+    // 区分「备份文件缺 meta」与「传入空对象」，给出可操作的提示
+    if(!backup)throw new Error('云端数据为空或不是本工具备份格式，请点「测试连接」查看具体原因');
+    throw new Error('云端文件缺少账本元数据（meta），可能由旧版程序上传或文件损坏，请用「数据管理」导出的备份重新上传');
+  }
   const raw=backup&&backup.checksum?backup.checksum:(src.checksum||'');
-  if(raw&&raw!==checksum(src))throw new Error('云端备份校验失败，已拒绝写入');
+  if(raw&&raw!==checksum(src))throw new Error('云端备份校验失败，已拒绝写入（文件可能在传输中损坏或被改动）');
   return normalize(stripSecrets(clone(src)));
 }
 function queuePush(reason){
@@ -1629,14 +1646,14 @@ async function runSync(fn){
 function syncPush(){return runSync(()=>performPush(syncCfg().lastRemoteEtag||undefined));}
 function syncPull(){return runSync(async()=>{
   const res=await requestSync('GET');
-  if(res.status===404||!extractBackup(res)){toast('云端暂无数据，请先上传本机账本');return 'empty';}
-  if(!res.ok)throw new Error('下载失败（HTTP '+res.status+'）');
+  if(res.status===404){toast('云端暂无数据，请先上传本机账本');return 'empty';}
+  if(!res.ok||!extractBackup(res))throw new Error(diagnoseRemote(res));
   return performPull(res);
 });}
 function syncSmart(){return runSync(async()=>{
   const res=await requestSync('GET');
-  if(res.status===404||!extractBackup(res))return performPush(undefined);
-  if(!res.ok)throw new Error('同步失败（HTTP '+res.status+'）');
+  if(res.status===404)return performPush(undefined);
+  if(!res.ok||!extractBackup(res))throw new Error(diagnoseRemote(res));
   const backup=extractBackup(res),remote=validateBackup(backup);
   const cfg=syncCfg();
   const localAt=String(S.meta.updatedAt||''),remoteAt=String((backup&&backup.exportedAt)||remote.meta.updatedAt||'');
@@ -2476,7 +2493,27 @@ function init(){
   }
   if(!UI.loggedIn)showLoginDialog();
   if(typeof navigator!=='undefined'&&navigator.serviceWorker&&typeof location!=='undefined'&&/^https?:/.test(location.protocol)){
-    navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    navigator.serviceWorker.register('./sw.js').then(reg=>{
+      if(!reg)return;
+      // 新 SW 安装后自动刷新一次页面，确保手机端用上最新同步/解析逻辑
+      if(reg.waiting&&reg.waiting.state==='installed'){
+        reg.waiting.postMessage('skipWaiting');
+        if(typeof window!=='undefined'&&typeof location!=='undefined'){
+          setTimeout(()=>location.reload(),300);
+        }
+      }
+      if(typeof reg.addEventListener==='function'){
+        reg.addEventListener('updatefound',()=>{
+          const inst=reg.installing;if(!inst||typeof inst.addEventListener!=='function')return;
+          inst.addEventListener('statechange',()=>{
+            if(inst.state==='installed'&&navigator.serviceWorker.controller){
+              inst.postMessage('skipWaiting');
+              if(typeof window!=='undefined'&&typeof location!=='undefined')setTimeout(()=>location.reload(),300);
+            }
+          });
+        });
+      }
+    }).catch(()=>{});
   }
 }
 
@@ -2727,9 +2764,9 @@ function bindEvents(){
           setTimeout(()=>infoDialog('测试连接成功','账号与仓库可访问，云端尚无账本文件。点击「智能同步」即可上传本机账本。'),60);
           return 'empty';
         }
-        if(!res.ok)throw new Error('连接失败（HTTP '+res.status+'）'+(res.payload&&res.payload.message?'：'+res.payload.message:''));
+        if(!res.ok)throw new Error('连接失败：'+diagnoseRemote(res));
         const b=extractBackup(res);
-        if(!b)throw new Error('云端文件不是本工具备份格式');
+        if(!b)throw new Error(diagnoseRemote(res));
         const r=validateBackup(b);
         const msg=`连接成功 · 账本「${r.meta.ledgerName||'未命名'}」· ${r.transactions.filter(t=>!t.deletedAt).length} 笔流水 · 校验 ${esc(String((b&&b.checksum)||''))}`;
         const c=syncCfg();c.lastResult='连接成功';S.meta.sync=c;save();render();
