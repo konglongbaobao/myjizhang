@@ -1,0 +1,22 @@
+{
+  "name": "我的记账本",
+  "short_name": "记账本",
+  "description": "本地优先的个人记账工具，支持周期预算、账户、统计报表与云同步。",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f6f2",
+  "theme_color": "#7d9ca6",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "./icons/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ],
+  "shortcuts": [
+    { "name": "记一笔支出", "short_name": "记支出", "url": "./index.html?quick=expense", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "记一笔收入", "short_name": "记收入", "url": "./index.html?quick=income", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "看预算", "short_name": "预算", "url": "./index.html?quick=budget", "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
